@@ -53,6 +53,7 @@ if __name__ == "__main__":
                     "env_config": {
                         "map_name": args.map_name,
                     },
+                    "framework": "torch",
                 },
             },
         }

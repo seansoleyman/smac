@@ -2,49 +2,48 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import tensorflow as tf
+from gym import spaces
+import torch
+from torch import nn
+from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
+from ray.rllib.models.torch.fcnet import FullyConnectedNetwork as TorchFC
+from ray.rllib.utils.torch_ops import FLOAT_MIN
+from ray.rllib.utils.torch_ops import FLOAT_MAX
 
-from ray.rllib.models import Model
-from ray.rllib.models.tf.misc import normc_initializer
 
-
-class MaskedActionsModel(Model):
+class MaskedActionsModel(TorchModelV2, nn.Module):
     """Custom RLlib model that emits -inf logits for invalid actions.
 
     This is used to handle the variable-length StarCraft action space.
     """
 
-    def _build_layers_v2(self, input_dict, num_outputs, options):
+    def __init__(self, obs_space, action_space, num_outputs, model_config, name):
+        TorchModelV2.__init__(self, obs_space, action_space, num_outputs, model_config, name)
+        nn.Module.__init__(self)
+
+        obs_len = obs_space.shape[0]-action_space.n
+        orig_obs_space = spaces.Box(shape=(obs_len,), low=obs_space.low[:obs_len], high=obs_space.high[:obs_len])
+
+        self.action_embed_model = TorchFC(orig_obs_space, action_space, action_space.n, model_config, name + "_action_embed")
+
+
+    def forward(self, input_dict, state, seq_lens):
+        # Extract the available actions tensor from the observation.
         action_mask = input_dict["obs"]["action_mask"]
-        if num_outputs != action_mask.shape[1].value:
-            raise ValueError(
-                "This model assumes num outputs is equal to max avail actions",
-                num_outputs,
-                action_mask,
-            )
 
-        # Standard fully connected network
-        last_layer = input_dict["obs"]["obs"]
-        hiddens = options.get("fcnet_hiddens")
-        for i, size in enumerate(hiddens):
-            label = "fc{}".format(i)
-            last_layer = tf.layers.dense(
-                last_layer,
-                size,
-                kernel_initializer=normc_initializer(1.0),
-                activation=tf.nn.tanh,
-                name=label,
-            )
-        action_logits = tf.layers.dense(
-            last_layer,
-            num_outputs,
-            kernel_initializer=normc_initializer(0.01),
-            activation=None,
-            name="fc_out",
-        )
+        # Compute the unmasked action logits.
+        action_logits, _ = self.action_embed_model({
+            "obs": input_dict["obs"]["obs"]
+        })
 
-        # Mask out invalid actions (use tf.float32.min for stability)
-        inf_mask = tf.maximum(tf.log(action_mask), tf.float32.min)
-        masked_logits = inf_mask + action_logits
+        # Perform masking.
+        #inf_mask = torch.clamp(torch.log(action_mask), -1e10, FLOAT_MAX)
+        #return action_logits + inf_mask, state
+        action_mask_boolean = action_mask > 0.5
+        masked_value = torch.tensor(FLOAT_MIN)
+        masked_logits = torch.where(action_mask_boolean, action_logits, masked_value)
+        return masked_logits, state
 
-        return masked_logits, last_layer
+
+    def value_function(self):
+        return self.action_embed_model.value_function()

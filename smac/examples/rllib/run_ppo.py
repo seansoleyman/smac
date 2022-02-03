@@ -43,13 +43,14 @@ if __name__ == "__main__":
                 "config": {
                     "num_workers": args.num_workers,
                     "observation_filter": "NoFilter",  # breaks the action mask
-                    "vf_share_layers": True,  # no separate value model
                     "env_config": {
                         "map_name": args.map_name,
                     },
                     "model": {
+                        "vf_share_layers": True,  # no separate value model
                         "custom_model": "mask_model",
                     },
+                    "framework": "torch",
                 },
             },
         }
